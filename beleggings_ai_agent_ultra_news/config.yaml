@@ -1,0 +1,27 @@
+portfolio:
+  tickers: ["ASML.AS", "AD.AS", "PHIA.AS", "NN.AS", "URW.AS", "AAPL", "MSFT", "NVDA"]
+  weights: null
+watchlist: ["ASML.AS", "AAPL", "NVDA"]
+sectors:
+  Tech: ["ASML.AS", "PHIA.AS", "AAPL", "MSFT", "NVDA"]
+  Consumer: ["AD.AS"]
+  Financials: ["NN.AS"]
+  REITs: ["URW.AS"]
+risk:
+  max_position_pct: 0.2
+  stop_loss_pct: 0.1
+  take_profit_pct: 0.2
+  target_portfolio_vol: 0.15
+signals:
+  ma_short: 20
+  ma_long: 50
+  rsi_period: 14
+  rsi_buy: 35
+  rsi_sell: 65
+data:
+  lookback_days: 365
+reporting:
+  currency: "EUR"
+news:
+  provider: "auto"   # auto | yahoo | newsapi | finnhub
+  per_ticker: 8
