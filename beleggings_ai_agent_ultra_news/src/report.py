@@ -1,5 +1,18 @@
 import os, smtplib, ssl, requests
 from email.mime.text import MIMEText
+import math
+
+def _fmt_num(x, nd=2):
+    try:
+        if x is None:
+            return "-"
+        if isinstance(x, (int, float)):
+            if math.isnan(x) or math.isinf(x):
+                return "-"
+            return f"{x:.{nd}f}"
+        return str(x)
+    except Exception:
+        return "-"
 
 def make_report_md(rep: dict) -> str:
     lines = []
@@ -10,42 +23,58 @@ def make_report_md(rep: dict) -> str:
         lines.append("| Ticker | Advies | Close | RSI | SMA S | SMA L |")
         lines.append("|---|---|---:|---:|---:|---:|")
         for t, s in sigs.items():
-            lines.append(f"| {t} | {s['signal']} | {s['close']:.2f} | {s['rsi']:.1f} | {s['sma_s']:.2f} | {s['sma_l']:.2f} |")
+            lines.append(
+                f"| {t} | {s.get('signal','')} | "
+                f"{_fmt_num(s.get('close'))} | {_fmt_num(s.get('rsi'),1)} | "
+                f"{_fmt_num(s.get('sma_s'))} | {_fmt_num(s.get('sma_l'))} |"
+            )
     fc = rep.get("forecast_5d", {})
     if fc:
-        lines.append("\n## 5-daagse forecast (price)")
-        lines.append("| Ticker | Verwacht |")
+        lines.append("\n## Forecast (5 dagen)")
+        lines.append("| Ticker | Verwachte Close |")
         lines.append("|---|---:|")
         for t, v in fc.items():
-            lines.append(f"| {t} | {v:.2f} |")
-    opps = rep.get("opportunities", {})
-    if opps:
-        lines.append("\n## Kansen per sector (screener)")
-        for sec, items in opps.items():
-            pretty = ", ".join([f"{t} ({score:.2f})" for t, score in items])
-            lines.append(f"- **{sec}**: {pretty if pretty else '—'}")
-    sector = rep.get("sector_report", [])
+            lines.append(f"| {t} | {_fmt_num(v)} |")
+
+    sector = rep.get("sector_report", []) or []
     if sector:
-        lines.append("\n## Sector-rapport")
-        lines.append("| Sector | Tickers | Gem. prijs | Aantal |")
-        lines.append("|---|---|---:|---:|")
+        lines.append("\n## Sector-overzicht")
+        lines.append("| Sector | Tickers | Gem. prijs | Median | Covered | Missing |")
+        lines.append("|---|---|---:|---:|---:|---:|")
         for row in sector:
-            lines.append(f"| {row['sector']} | {row['tickers']} | {row['avg_price']:.2f} | {row['count']} |")
+            lines.append(
+                f"| {row.get('sector','')} | {row.get('tickers','')} | "
+                f"{_fmt_num(row.get('avg_price'))} | {_fmt_num(row.get('median_price'))} | "
+                f"{row.get('covered',0)} | {row.get('missing',0)} |"
+            )
+
+    opps = rep.get("opportunities", {}) or {}
+    if opps:
+        lines.append("\n## Kansen (screening)")
+        for sec, rows in opps.items():
+            lines.append(f"- **{sec}**: " + ", ".join([f"{t} ({_fmt_num(score)})" for t, score in rows]))
+
+    risk = rep.get("risk", {}) or {}
+    if risk:
+        lines.append("\n## Risico-instellingen")
+        for k, v in risk.items():
+            lines.append(f"- {k}: {v}")
+
     return "\n".join(lines)
 
 def send_slack(markdown: str, webhook_url: str = None, timeout: int = 10):
-    url = webhook_url or os.getenv("SLACK_WEBHOOK_URL")
+    url = webhook_url or os.getenv("SLACK_WEBHOOK")
     if not url:
-        return False, "SLACK_WEBHOOK_URL ontbreekt"
+        return False, "Geen Slack webhook ingesteld."
     try:
-        res = requests.post(url, json={"text": markdown}, timeout=timeout)
-        ok = 200 <= res.status_code < 300
-        return ok, res.text if not ok else "OK"
+        r = requests.post(url, json={"text": markdown}, timeout=timeout)
+        r.raise_for_status()
+        return True, "OK"
     except Exception as e:
         return False, str(e)
 
-def send_email(subject: str, markdown: str, to_addr: str = None):
-    host = os.getenv("SMTP_HOST"); port = int(os.getenv("SMTP_PORT", "587"))
+def send_email(markdown: str, subject: str = "Dagrapport", to_addr: str = None):
+    host = os.getenv("SMTP_HOST"); port = int(os.getenv("SMTP_PORT","587"))
     user = os.getenv("SMTP_USER"); pwd = os.getenv("SMTP_PASS")
     to = to_addr or os.getenv("EMAIL_TO")
     if not all([host, port, user, pwd, to]):
