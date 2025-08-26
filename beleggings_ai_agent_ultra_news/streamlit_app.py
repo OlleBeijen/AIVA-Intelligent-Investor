@@ -3,7 +3,6 @@ from pathlib import Path
 
 # ==== Streamlit eerst, zet watcher op 'poll' (fix voor inotify) ====
 import streamlit as st
-st.set_option("server.fileWatcherType", "poll")
 
 # ---- Zorg dat 'src' importeerbaar is ----
 APP_DIR = Path(__file__).resolve().parent
