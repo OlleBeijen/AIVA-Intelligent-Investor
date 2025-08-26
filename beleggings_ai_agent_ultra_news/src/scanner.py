@@ -1,91 +1,127 @@
+# src/scanner.py
+from __future__ import annotations
 from typing import Dict, List, Tuple
+import math
+import numpy as np
 import pandas as pd
-import yfinance as yf
-from datetime import datetime, timedelta
 
-def _flatten_columns(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
-    if isinstance(df.columns, pd.MultiIndex):
+from .data_sources import fetch_prices
+
+# =============== Helpers ===============
+
+def _to_close_series(px: Dict[str, pd.DataFrame]) -> Dict[str, pd.Series]:
+    out: Dict[str, pd.Series] = {}
+    for t, df in px.items():
         try:
-            df = df.xs(ticker, axis=1, level=1)
+            s = df["Close"].astype(float).dropna()
+            if len(s) >= 60:  # minimaal 60 dagen om iets zinnigs te berekenen
+                out[t] = s
         except Exception:
-            df.columns = df.columns.get_level_values(0)
-    return df
-
-def _to_series(close_like) -> pd.Series:
-    if isinstance(close_like, pd.Series):
-        s = close_like
-    elif isinstance(close_like, pd.DataFrame):
-        s = close_like.iloc[:, 0] if close_like.shape[1] >= 1 else pd.Series(dtype='float64')
-    else:
-        s = pd.Series(close_like).squeeze()
-    s = pd.to_numeric(s, errors='coerce')
-    s.name = 'Close'
-    return s
-
-def _download(tickers: List[str], lookback_days: int = 400):
-    start = datetime.today() - timedelta(days=lookback_days*2)
-    out = {}
-    for t in tickers:
-        df = yf.download(t, start=start.strftime("%Y-%m-%d"), progress=False, auto_adjust=True, group_by="column", threads=False)
-        if df is None or df.empty:
-            continue
-        df = _flatten_columns(df, t).rename(columns=str.title).dropna(how="all")
-        # ensure Close exists and is 1D
-        if "Close" not in df.columns and "Adj Close" in df.columns:
-            df["Close"] = df["Adj Close"]
-        if isinstance(df.get("Close"), pd.DataFrame):
-            df["Close"] = df["Close"].iloc[:, 0]
-        df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
-        df = df.dropna(subset=["Close"])
-        if not df.empty:
-            out[t] = df
+            pass
     return out
 
-def _factors(df: pd.DataFrame) -> pd.Series:
-    px = _to_series(df.get("Close"))
-    if px is None or px.empty:
-        return pd.Series({"mom_12m": None, "mom_3m": None, "vol_20d": None, "dist_52w_high": None, "uptrend": None})
-    ret_252 = px.pct_change(252).iloc[-1] if len(px) > 252 else None
-    ret_63  = px.pct_change(63).iloc[-1] if len(px) > 63 else None
-    vol20   = px.pct_change().rolling(20).std().iloc[-1] if len(px) > 20 else None
-    if len(px) > 252:
-        high_52 = px.rolling(252).max().iloc[-1]
-    else:
-        high_52 = px.max()
-    # Avoid ambiguous truth values and divide-by-zero
+def _safe_pct(a: float, b: float) -> float:
     try:
-        h = float(high_52)
-        dist_h = (float(px.iloc[-1]) / h) - 1 if h not in (0.0, float("inf")) else None
+        if b and not math.isclose(b, 0.0):
+            return float(a / b - 1.0)
     except Exception:
-        dist_h = None
-    ma50 = px.rolling(50).mean().iloc[-1] if len(px) > 50 else None
-    uptrend = 1.0 if (ma50 is not None and float(px.iloc[-1]) > float(ma50)) else 0.0
-    return pd.Series({"mom_12m": ret_252, "mom_3m": ret_63, "vol_20d": vol20, "dist_52w_high": dist_h, "uptrend": uptrend})
+        pass
+    return float("nan")
 
-def screen_universe(sectors: Dict[str, List[str]], top_n: int = 5) -> Dict[str, List[Tuple[str, float]]]:
-    all_tickers = sorted({t for ts in sectors.values() for t in ts})
-    data = _download(all_tickers, 400)
-    rows = []
-    for t, df in data.items():
-        if len(df) < 120:
+def _factors(s: pd.Series) -> Dict[str, float]:
+    """Bereken simpele factorfeatures zonder te crashen."""
+    s = s.dropna()
+    if s.empty:
+        return {}
+    last = float(s.iloc[-1])
+    # 52 weken ~ 252 handelsdagen
+    look = min(252, len(s))
+    window = s.iloc[-look:]
+    hi = float(window.max())
+    lo = float(window.min())
+
+    # momentum 20/60/120
+    def mom(n: int) -> float:
+        if len(s) > n:
+            return _safe_pct(float(s.iloc[-1]), float(s.iloc[-n-1]))
+        return float("nan")
+
+    m20  = mom(20)
+    m60  = mom(60)
+    m120 = mom(120)
+
+    # afstand tot high/low
+    dist_h = _safe_pct(last, hi)   # negatief als onder high
+    dist_l = _safe_pct(last, lo)   # positief als boven low
+
+    # volatiliteit (std van dagret)
+    rets = window.pct_change().dropna()
+    vol = float(rets.std()) if not rets.empty else float("nan")
+
+    # samengestelde score: momentum ↑, dichter bij low (positief dist_l), verder van high (negatieve dist_h is OK)
+    # penaliseer heel hoge vol
+    parts = []
+    for v in [m20, m60, m120, dist_l, -dist_h]:
+        if not math.isnan(v):
+            parts.append(v)
+    score = float(np.nanmean(parts)) if parts else float("nan")
+    if not math.isnan(vol) and vol > 0:
+        score = score / (1.0 + 3.0 * vol)
+
+    return {
+        "last": last,
+        "high_52": hi,
+        "low_52": lo,
+        "mom20": m20,
+        "mom60": m60,
+        "mom120": m120,
+        "dist_high": dist_h,
+        "dist_low": dist_l,
+        "vol": vol,
+        "score": score,
+    }
+
+# =============== Public API ===============
+
+def screen_universe(sectors: Dict[str, List[str]], lookback_days: int = 400, top_k: int = 5) -> Dict[str, List[Tuple[str, float]]]:
+    """
+    Maakt per sector een lijst met (ticker, score), gesorteerd aflopend.
+    - gebruikt fetch_prices (Finnhub -> Stooq) i.p.v. yfinance
+    - faalt nooit hard: lege sectoren geven []
+    """
+    res: Dict[str, List[Tuple[str, float]]] = {}
+    sectors = sectors or {}
+
+    # Verzamel alle tickers uniek
+    universe: List[str] = []
+    for _, ticks in sectors.items():
+        if not ticks: 
             continue
-        fac = _factors(df)
-        rows.append({"ticker": t, **fac.to_dict()})
-    if not rows:
-        return {s: [] for s in sectors}
-    fac = pd.DataFrame(rows).dropna()
-    if fac.empty:
-        return {s: [] for s in sectors}
+        for t in ticks:
+            if t and t not in universe:
+                universe.append(t)
 
-    fac["r_mom12"] = fac["mom_12m"].rank(pct=True, na_option="bottom")
-    fac["r_mom3"]  = fac["mom_3m"].rank(pct=True, na_option="bottom")
-    fac["r_vol"]   = (-fac["vol_20d"]).rank(pct=True, na_option="bottom")
-    fac["r_dist"]  = (-fac["dist_52w_high"]).rank(pct=True, na_option="bottom")
-    fac["r_trend"] = fac["uptrend"].rank(pct=True, na_option="bottom")
-    fac["score"]   = fac[["r_mom12","r_mom3","r_vol","r_dist","r_trend"]].mean(axis=1)
+    if not universe:
+        return {sec: [] for sec in sectors.keys()}
 
-    res = {}
-    for sec, ts in sectors.items():
-        sdf = fac[fac["ticker"].isin(ts)].sort_values("score", ascending=False)
-        res[sec] = list(zip(sdf["ticker"].head(top_n), sdf["score"].head(top_n)))
+    # 1) Haal prijzen (deelsucces oké)
+    px = fetch_prices(universe, lookback_days=lookback_days)
+    closes = _to_close_series(px)
+
+    # 2) Factors per ticker
+    fac_map: Dict[str, Dict[str, float]] = {}
+    for t, s in closes.items():
+        f = _factors(s)
+        if f and not math.isnan(f.get("score", float("nan"))):
+            fac_map[t] = f
+
+    # 3) Per sector: sorteer op score en pak top_k
+    for sec, ticks in sectors.items():
+        rows: List[Tuple[str, float]] = []
+        for t in (ticks or []):
+            f = fac_map.get(t)
+            if f:
+                rows.append((t, float(f["score"])))
+        rows.sort(key=lambda x: x[1], reverse=True)
+        res[sec] = rows[:top_k]
     return res
