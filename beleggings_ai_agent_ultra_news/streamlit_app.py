@@ -114,8 +114,8 @@ with st.sidebar:
     # Data provider (koersdata) - inclusief offline
     data_provider = st.selectbox(
         "Data provider",
-        ["auto", "finnhub", "alpha_vantage", "offline"],
-        index=["auto","finnhub","alpha_vantage","offline"].index(os.getenv("DATA_PROVIDER","auto")),
+        ["auto", "yfinance", "finnhub", "alpha_vantage", "offline"],
+        index=["auto","yfinance","finnhub","alpha_vantage","offline"].index(os.getenv("DATA_PROVIDER","auto")),
         help="‘auto’ probeert yfinance → finnhub → alpha_vantage. 'offline' gebruikt lokale CSV of synthetic data."
     )
     os.environ["DATA_PROVIDER"] = data_provider
