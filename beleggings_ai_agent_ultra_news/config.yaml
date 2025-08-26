@@ -1,21 +1,6 @@
 portfolio:
-  tickers:
-    - "ASML.AS"
-    - "AD.AS"
-    - "PHIA.AS"
-    - "NN.AS"
-    - "URW.AS"
-    - "AAPL"
-    - "MSFT"
-    - "NVDA"
-    - "ZSIL.SW"
-    - "ZPLA.SW"
-    - "DNN"
-    - "FVL.TO"
-    - "FNV"
-    - "SBSW"
-    - "MAG"
-    - "DSV.TO"
+  tickers: ["ASML.AS","AD.AS","PHIA.AS","NN.AS","URW.AS","AAPL","MSFT","NVDA","ZSIL.SW","ZPLA.SW","DNN","FVL.TO","FNV","SBSW","MAG","DSV.V"]
+
   weights: null  # of vul handmatig in, bv: {"ASML.AS":0.1, ...}
 
 watchlist: []
