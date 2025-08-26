@@ -10,7 +10,6 @@ for base in candidates:
 
 import streamlit as st
 import pandas as pd
-import yaml
 
 # ---- App modules ----
 from src.utils import resolve_config, load_config, save_config, now_ams
@@ -25,6 +24,7 @@ from src.alerts import build_alerts
 from src.report import make_report_md
 from src.policy import EDU_LABEL, DEF_DISCLAIMER
 from src.ui import inject_css, hero
+from src.decisions import system_actions
 
 st.set_page_config(page_title="AIVA • Intelligent Investor", layout="wide")
 
@@ -32,8 +32,7 @@ st.set_page_config(page_title="AIVA • Intelligent Investor", layout="wide")
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def cached_prices(tickers, days, provider):
-    # provider in cache-key opnemen
-    os.environ["DATA_PROVIDER"] = provider
+    os.environ["DATA_PROVIDER"] = provider  # provider in cache-key opnemen
     return fetch_prices(tickers, lookback_days=days)
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -52,11 +51,6 @@ def _env_present(name: str) -> bool:
 def _badge(ok: bool) -> str:
     return "✅" if ok else "❌"
 
-def _safe_df(df: pd.DataFrame | None) -> pd.DataFrame:
-    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
-        return pd.DataFrame()
-    return df
-
 def _section(title: str):
     st.markdown(f"### {title}")
 
@@ -68,7 +62,7 @@ def _info(msg: str):
 
 # ========= UI Start =========
 inject_css()
-hero("AIVA Intelligent Investor", "Snelle dag-run, signalen, nieuws & uitleg (educatief)")
+hero("AIVA Intelligent Investor", "Dag-run, signalen, nieuws & systeem-acties (educatief)")
 
 day_report = {}
 
@@ -87,11 +81,9 @@ with st.sidebar:
     # Basis uit config
     portfolio = (cfg.get("portfolio") or {})
     tickers = portfolio.get("tickers") or []
-    watchlist = cfg.get("watchlist") or []
     sectors = cfg.get("sectors") or {}
     sig_params = cfg.get("signals") or {}
     lookback_days = int((cfg.get("data") or {}).get("lookback_days", 365))
-    currency = (cfg.get("reporting") or {}).get("currency", "EUR")
     news_cfg = cfg.get("news") or {}
     news_provider = news_cfg.get("provider", "auto")
     news_per_ticker = int(news_cfg.get("per_ticker", 6))
@@ -119,6 +111,32 @@ with st.sidebar:
     news_per_ticker = st.slider("Nieuws per ticker", 0, 12, news_per_ticker, 1)
 
     st.markdown("---")
+    st.subheader("Rules (systeem)")
+    sys_cfg = cfg.get("system") or {}
+    regime_filter = st.checkbox("Regime filter (prijs > SMA200)", value=bool(sys_cfg.get("regime_filter", True)))
+    macd_confirm = st.checkbox("MACD bevestiging", value=bool(sys_cfg.get("macd_confirm", True)))
+    hysteresis_days = st.slider("Hysterese (dagen boven/onder cross)", 1, 5, int(sys_cfg.get("hysteresis_days", 2)))
+    stop_loss_pct = st.slider("Stop-loss (%)", 2, 20, int(round(float(sys_cfg.get("stop_loss_pct", 0.08))*100)), 1) / 100.0
+    take_profit_pct = st.slider("Take-profit (%)", 5, 40, int(round(float(sys_cfg.get("take_profit_pct", 0.16))*100)), 1) / 100.0
+    risk_per_trade_pct = st.slider("Risico per trade (%) van kapitaal", 0.1, 5.0, float(sys_cfg.get("risk_per_trade_pct", 0.5)), 0.1)
+    use_atr = st.checkbox("Position sizing met ATR", value=bool(sys_cfg.get("use_atr", True)))
+    atr_window = st.slider("ATR window", 5, 30, int(sys_cfg.get("atr_window", 14)))
+    capital_eur = st.number_input("Totaal kapitaal (€)", value=float(sys_cfg.get("capital_eur", 25000.0)), min_value=1000.0, step=500.0)
+
+    system_cfg = {
+        "regime_filter": regime_filter,
+        "macd_confirm": macd_confirm,
+        "hysteresis_days": int(hysteresis_days),
+        "stop_loss_pct": float(stop_loss_pct),
+        "take_profit_pct": float(take_profit_pct),
+        "risk_per_trade_pct": float(risk_per_trade_pct),
+        "use_atr": bool(use_atr),
+        "atr_window": int(atr_window),
+        "capital_eur": float(capital_eur),
+        "max_positions": int((sys_cfg.get("max_positions", 8))),
+    }
+
+    st.markdown("---")
     with st.expander("Diagnostiek"):
         st.write("**API keys**")
         st.write(f"OpenAI: {_badge(_env_present('OPENAI_API_KEY'))}")
@@ -129,12 +147,16 @@ with st.sidebar:
         st.write(f"Finnhub:{_badge(_env_present('FINNHUB_KEY'))}")
         st.write(f"AlphaVantage:{_badge(_env_present('ALPHAVANTAGE_KEY'))}")
         st.write(f"Data provider: `{os.getenv('DATA_PROVIDER','auto')}`")
-        st.write(f"SMTP_HOST: {_badge(_env_present('SMTP_HOST'))} • EMAIL_TO: {_badge(_env_present('EMAIL_TO'))}")
         st.caption("Keys worden hier niet getoond; alleen aanwezig/afwezig.")
+
+        if st.button("🔄 Force refresh (clear cache)"):
+            st.cache_data.clear()
+            st.success("Cache geleegd. Klik op Rerun.")
 
     st.markdown("---")
     if st.button("Config opslaan", use_container_width=True):
         try:
+            cfg["system"] = system_cfg
             save_config(cfg, config_path)
             st.success("Config opgeslagen.")
         except Exception as e:
@@ -153,7 +175,7 @@ with colA:
         try:
             prices = cached_prices(tickers, lookback_days, data_provider)
             last = cached_latest_close(tickers, 10, data_provider)
-            signals = generate_signals(prices, params=sig_params)
+            signals = generate_signals(prices, params=sig_params, opts=system_cfg)
             forecast = simple_forecast(prices, horizon_days=5)
             sector_df = sector_report(sectors, last)
             alerts = build_alerts(signals)
@@ -166,8 +188,11 @@ with colA:
                 "alerts": alerts,
                 "risk": (cfg.get("risk") or {}),
             }
+            sys_actions = system_actions(prices, sig_params, system_cfg)
+            day_report["system_actions"] = sys_actions
+
             if not prices:
-                _err("Geen koersdata ontvangen. Probeer een andere Data provider en/of zet FINNHUB_KEY of ALPHAVANTAGE_KEY.")
+                _err("Geen koersdata ontvangen. Kies een andere Data provider en/of zet FINNHUB_KEY of ALPHAVANTAGE_KEY.")
             else:
                 st.success("Dag-run klaar.")
         except Exception as e:
@@ -186,7 +211,9 @@ with colB:
                 "RSI": s.get("rsi"),
                 "SMA_S": s.get("sma_s"),
                 "SMA_L": s.get("sma_l"),
+                "SMA_200": s.get("sma_200"),
                 "MACD": s.get("macd"),
+                "MACD_SIG": s.get("macd_sig"),
             })
         df_sig = pd.DataFrame(sig_rows).sort_values(["Signaal","Ticker"])
         st.dataframe(df_sig, use_container_width=True, hide_index=True)
@@ -278,6 +305,18 @@ if day_report.get("alerts"):
         st.write("• " + a)
 else:
     st.caption("Geen alerts.")
+
+# ========= System actions =========
+st.markdown("---")
+_section("System actions (regels, niet persoonlijk advies)")
+if day_report.get("system_actions"):
+    df_act = pd.DataFrame(day_report["system_actions"])
+    if not df_act.empty:
+        st.dataframe(df_act, use_container_width=True, hide_index=True)
+        csv = df_act.to_csv(index=False).encode("utf-8")
+        st.download_button("Download acties (.csv)", data=csv, file_name="system_actions.csv", mime="text/csv")
+else:
+    st.caption("Geen acties vandaag op basis van de ingestelde regels.")
 
 # ========= Rapport (Markdown) =========
 st.markdown("---")
