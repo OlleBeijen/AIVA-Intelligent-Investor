@@ -32,3 +32,15 @@ news:
 
 risk:
   target_vol: 0.15
+
+system:
+  regime_filter: true        # alleen long als prijs > SMA200
+  macd_confirm:  true        # koop alleen als MACD > signaal (verkoop: MACD < signaal)
+  hysteresis_days: 2         # cross moet x dagen standhouden
+  stop_loss_pct: 0.08        # 8% onder entry
+  take_profit_pct: 0.16      # 16% boven entry
+  risk_per_trade_pct: 0.5    # % van portefeuille-waarde per trade (risicobudget)
+  max_positions: 8
+  use_atr: true              # sizing met ATR; anders simpele vol
+  atr_window: 14
+  capital_eur: 25000         # nodig voor sizing (pas aan)
