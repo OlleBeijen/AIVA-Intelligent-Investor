@@ -1,6 +1,8 @@
 from typing import Dict
 import yaml
 from pathlib import Path
+import pandas as pd  # <- Zorg dat deze import aanwezig is!
+
 from .data_sources import fetch_prices, latest_close
 from .signals import generate_signals
 from .forecasting import simple_forecast
@@ -14,13 +16,27 @@ def run_day(config_path: str = "config.yaml") -> Dict:
     tickers = cfg["portfolio"]["tickers"]
     lookback = cfg["data"]["lookback_days"]
 
+    # 1. Prijzen ophalen
     prices = fetch_prices(tickers, lookback_days=lookback)
-    last = latest_close(prices)
+    last = latest_close(tickers)
+
+    # 2. Signalen & Forecast
     sigs = generate_signals(prices, cfg["signals"])
     fc = simple_forecast(prices, horizon_days=5)
-    sector_df = sector_report(cfg["sectors"], last)
-    opps = screen_universe(cfg["sectors"])
 
+    # 3. Sector rapport veilig ophalen
+    try:
+        sector_df = sector_report(cfg.get("sectors", {}), last)
+    except Exception:
+        sector_df = pd.DataFrame(columns=["sector","covered","missing","avg_price","median_price","tickers"])
+
+    # 4. Screener veilig ophalen
+    try:
+        opps = screen_universe(cfg.get("sectors", {}))
+    except Exception:
+        opps = {}
+
+    # 5. Rapport samenstellen
     return {
         "timestamp": now_ams(),
         "last_prices": last,
