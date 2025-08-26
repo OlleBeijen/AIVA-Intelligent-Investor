@@ -31,15 +31,18 @@ st.set_page_config(page_title="AIVA • Intelligent Investor", layout="wide")
 # ========= Helpers =========
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def cached_prices(tickers: list[str], days: int) -> dict[str, pd.DataFrame]:
+def cached_prices(tickers, days, provider):
+    # provider in cache-key opnemen
+    os.environ["DATA_PROVIDER"] = provider
     return fetch_prices(tickers, lookback_days=days)
 
 @st.cache_data(ttl=900, show_spinner=False)
-def cached_latest_close(tickers: list[str], days: int) -> dict[str, float]:
+def cached_latest_close(tickers, days, provider):
+    os.environ["DATA_PROVIDER"] = provider
     return latest_close(tickers, lookback_days=days)
 
 @st.cache_data(ttl=900, show_spinner=False)
-def cached_news(tickers: list[str], per_ticker: int, provider: str) -> list[dict]:
+def cached_news(tickers, per_ticker, provider):
     return get_news(tickers=tickers, limit_per=per_ticker, provider=provider)
 
 def _env_present(name: str) -> bool:
@@ -67,6 +70,8 @@ def _info(msg: str):
 inject_css()
 hero("AIVA Intelligent Investor", "Snelle dag-run, signalen, nieuws & uitleg (educatief)")
 
+day_report = {}
+
 with st.sidebar:
     st.subheader("Instellingen")
     default_cfg = "config.yaml"
@@ -79,10 +84,10 @@ with st.sidebar:
         cfg = {}
         _err(f"Config niet gevonden of ongeldig: {e}")
 
-    # Basis from config
+    # Basis uit config
     portfolio = (cfg.get("portfolio") or {})
-    tickers: list[str] = portfolio.get("tickers") or []
-    watchlist: list[str] = cfg.get("watchlist") or []
+    tickers = portfolio.get("tickers") or []
+    watchlist = cfg.get("watchlist") or []
     sectors = cfg.get("sectors") or {}
     sig_params = cfg.get("signals") or {}
     lookback_days = int((cfg.get("data") or {}).get("lookback_days", 365))
@@ -91,14 +96,25 @@ with st.sidebar:
     news_provider = news_cfg.get("provider", "auto")
     news_per_ticker = int(news_cfg.get("per_ticker", 6))
 
-    # LLM provider (zet env zodat chat het oppikt)
-    provider = st.selectbox("LLM provider", ["openai", "groq", "gemini", "hf"], index=["openai","groq","gemini","hf"].index(os.getenv("LLM_PROVIDER", "openai")))
+    # LLM provider
+    provider = st.selectbox(
+        "LLM provider",
+        ["openai", "groq", "gemini", "hf"],
+        index=["openai","groq","gemini","hf"].index(os.getenv("LLM_PROVIDER", "openai"))
+    )
     os.environ["LLM_PROVIDER"] = provider
 
-    # Data lookback
-    lookback_days = st.slider("Lookback (dagen)", min_value=60, max_value=1095, value=lookback_days, step=15)
+    # Data provider (koersdata)
+    data_provider = st.selectbox(
+        "Data provider",
+        ["auto", "yfinance", "finnhub", "alpha_vantage"],
+        index=["auto","yfinance","finnhub","alpha_vantage"].index(os.getenv("DATA_PROVIDER","auto")),
+        help="‘auto’ probeert yfinance → finnhub → alpha_vantage."
+    )
+    os.environ["DATA_PROVIDER"] = data_provider
 
-    # Nieuws
+    # Lookback en nieuws
+    lookback_days = st.slider("Lookback (dagen)", min_value=60, max_value=1095, value=lookback_days, step=15)
     news_provider = st.selectbox("Nieuwsbron", ["auto","newsapi","finnhub"], index=["auto","newsapi","finnhub"].index(news_provider))
     news_per_ticker = st.slider("Nieuws per ticker", 0, 12, news_per_ticker, 1)
 
@@ -111,8 +127,10 @@ with st.sidebar:
         st.write(f"HF:     {_badge(_env_present('HF_API_KEY'))}")
         st.write(f"NewsAPI:{_badge(_env_present('NEWSAPI_KEY'))}")
         st.write(f"Finnhub:{_badge(_env_present('FINNHUB_KEY'))}")
+        st.write(f"AlphaVantage:{_badge(_env_present('ALPHAVANTAGE_KEY'))}")
+        st.write(f"Data provider: `{os.getenv('DATA_PROVIDER','auto')}`")
         st.write(f"SMTP_HOST: {_badge(_env_present('SMTP_HOST'))} • EMAIL_TO: {_badge(_env_present('EMAIL_TO'))}")
-        st.caption("Keys niet tonen hier; enkel aanwezig/afwezig.")
+        st.caption("Keys worden hier niet getoond; alleen aanwezig/afwezig.")
 
     st.markdown("---")
     if st.button("Config opslaan", use_container_width=True):
@@ -131,11 +149,10 @@ with colA:
     _section("Dag-run")
     if not tickers:
         _info("Geen tickers in config.")
-        day_report = {}
     else:
         try:
-            prices = cached_prices(tickers, lookback_days)
-            last = cached_latest_close(tickers, 10)
+            prices = cached_prices(tickers, lookback_days, data_provider)
+            last = cached_latest_close(tickers, 10, data_provider)
             signals = generate_signals(prices, params=sig_params)
             forecast = simple_forecast(prices, horizon_days=5)
             sector_df = sector_report(sectors, last)
@@ -149,7 +166,10 @@ with colA:
                 "alerts": alerts,
                 "risk": (cfg.get("risk") or {}),
             }
-            st.success("Dag-run klaar.")
+            if not prices:
+                _err("Geen koersdata ontvangen. Probeer een andere Data provider en/of zet FINNHUB_KEY of ALPHAVANTAGE_KEY.")
+            else:
+                st.success("Dag-run klaar.")
         except Exception as e:
             day_report = {}
             _err(f"Dag-run fout: {e}")
@@ -175,8 +195,10 @@ with colB:
 
     _section("Forecast (5 dagen)")
     if day_report.get("forecast_5d"):
-        df_fc = pd.DataFrame({"Ticker": list(day_report["forecast_5d"].keys()),
-                              "Verwachting_Close_5d": list(day_report["forecast_5d"].values())})
+        df_fc = pd.DataFrame({
+            "Ticker": list(day_report["forecast_5d"].keys()),
+            "Verwachting_Close_5d": list(day_report["forecast_5d"].values())
+        })
         st.dataframe(df_fc.sort_values("Ticker"), use_container_width=True, hide_index=True)
     else:
         st.caption("Nog geen forecast.")
@@ -195,7 +217,7 @@ col1, col2 = st.columns([2,3])
 
 with col1:
     _section("Nieuws")
-    news_tickers = tickers[:5]  # hou het kort
+    news_tickers = tickers[:5]
     items = []
     try:
         if news_per_ticker > 0 and news_tickers:
@@ -209,9 +231,7 @@ with col1:
             title = it.get("title","")
             src = it.get("publisher","")
             link = it.get("link","")
-            st.markdown(
-                f"- **[{t}]** [{title}]({link}) — {src}"
-            )
+            st.markdown(f"- **[{t}]** [{title}]({link}) — {src}")
     else:
         st.caption("Geen headlines.")
 
