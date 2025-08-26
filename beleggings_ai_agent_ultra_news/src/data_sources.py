@@ -1,21 +1,24 @@
 # src/data_sources.py
 from __future__ import annotations
-from typing import Dict, List, Tuple
-import io, time
+from typing import Dict, List, Tuple, Optional
+import io, time, math
 import pandas as pd
 import requests
 import yfinance as yf
 
-# ========= Config =========
+# ---------- instellingen ----------
 _YF_TIMEOUT = 20
-_MAX_RETRIES = 4
+_MAX_RETRIES = 3
 _BACKOFF = 1.8
 
-# Sommige EU-tickers hebben een US-ADR die beter beschikbaar is bij fallback
+# Bekende ADR/alternatieven voor EU tickers die vaak haperen
+# key = basis (zonder suffix), value = US/ADR symbool
 _ADR_US_MAP = {
-    "ASML": "ASML",   # ASML.AS  -> ASML (Nasdaq)
-    "PHIA": "PHG",    # Philips   -> PHG (NYSE)
-    "ADYEN": "ADYEY", # Adyen     -> OTC ADR
+    "ASML": "ASML",   # ASML.AS -> ASML (Nasdaq)
+    "PHIA": "PHG",    # Philips  -> PHG (NYSE)
+    "ADYEN": "ADYEY", # Adyen    -> OTC ADR
+    "URW": "UNBLF",   # Unibail-Rodamco-Westfield (fallback OTC)
+    "NN":  "NNGPF",   # NN Group (fallback OTC)
 }
 
 def _sanitize(tickers: List[str]) -> List[str]:
@@ -28,10 +31,10 @@ def _sanitize(tickers: List[str]) -> List[str]:
             seen.add(s); out.append(s)
     return out
 
-def _split(items: List[str], n: int = 25) -> List[List[str]]:
+def _split(items: List[str], n: int = 20) -> List[List[str]]:
     return [items[i:i+n] for i in range(0, len(items), n)]
 
-# ========= Yahoo (primaire) =========
+# ---------- Yahoo (primair, gebatcht) ----------
 def _yf_batch(batch: List[str], period: str, interval: str, auto_adjust: bool) -> Dict[str, pd.DataFrame]:
     data = yf.download(
         tickers=" ".join(batch),
@@ -56,30 +59,16 @@ def _yf_batch(batch: List[str], period: str, interval: str, auto_adjust: bool) -
             out[batch[0]] = data.dropna(how="all").copy()
     return out
 
-# ========= Stooq (fallback) =========
+# ---------- Stooq fallback (gratis CSV) ----------
 def _stooq_symbol(t: str) -> str:
-    """
-    Stooq symbolen:
-      - US: AAPL -> aapl
-      - US ADR van EU bedrijf: ASML -> asml.us
-      - Veel EU tickers hebben .de/.pl/.jp etc., maar beperkte dekking.
-    We richten ons op US/ADR fallback zodat AAPL/MSFT/NVDA/ASML werken.
-    """
     base = t.split(".")[0]
-    # Als het al US-achtig is (AAPL, MSFT, NVDA, ASML), gebruik plain of .us
-    if "." not in t or t.endswith(".AS") or t.endswith(".PA") or t.endswith(".DE"):
-        # Probeer US-ADR mapping voor bekende EU namen
-        if base in _ADR_US_MAP:
-            return _ADR_US_MAP[base].lower()  # bv ASML -> asml
-        # Anders: plain (voor echte US tickers)
-        return base.lower()
+    # Voor EU-probleemgevallen: gebruik US/ADR als best-effort
+    if base in _ADR_US_MAP:
+        return _ADR_US_MAP[base].lower()
+    # US tickers werken direct
     return base.lower()
 
-def _stooq_download_one(t: str, days: int) -> pd.DataFrame | None:
-    """
-    Stooq CSV endpoint: https://stooq.com/q/d/l/?s=aapl&i=d
-    Geen api key nodig. Historie is meestal voldoende (dagdata).
-    """
+def _stooq_one(t: str, days: int) -> Optional[pd.DataFrame]:
     sym = _stooq_symbol(t)
     url = f"https://stooq.com/q/d/l/?s={sym}&i=d"
     try:
@@ -91,7 +80,6 @@ def _stooq_download_one(t: str, days: int) -> pd.DataFrame | None:
         if "Date" in df.columns and "Close" in df.columns:
             df["Date"] = pd.to_datetime(df["Date"], errors="coerce", utc=True)
             df = df.set_index("Date").sort_index().dropna(how="any")
-            # Knip lookback af (ongeveer)
             if days and len(df) > days + 10:
                 df = df.iloc[-(days+10):]
             return df[["Open","High","Low","Close","Volume"]].copy()
@@ -99,12 +87,52 @@ def _stooq_download_one(t: str, days: int) -> pd.DataFrame | None:
         return None
     return None
 
-# ========= Publieke API =========
+# ---------- Finnhub fallback (jouw key) ----------
+def _finnhub_candles(t: str, days: int) -> Optional[pd.DataFrame]:
+    key = requests.os.getenv("FINNHUB_KEY")
+    if not key:
+        return None
+    # Probeer originele symbool, daarna US/ADR alternatief
+    tries = [t]
+    base = t.split(".")[0]
+    if base in _ADR_US_MAP and _ADR_US_MAP[base] not in tries:
+        tries.append(_ADR_US_MAP[base])
+
+    # periode in unix timestamps (ongeveer)
+    secs = max(int(days or 60), 60) * 86400
+    now = int(time.time())
+    _from = now - secs
+    _to = now
+
+    for sym in tries:
+        url = "https://finnhub.io/api/v1/stock/candle"
+        params = {"symbol": sym, "resolution": "D", "from": _from, "to": _to, "token": key}
+        try:
+            r = requests.get(url, params=params, timeout=12)
+            r.raise_for_status()
+            data = r.json()
+            if not data or data.get("s") != "ok":
+                continue
+            # bouw DataFrame
+            df = pd.DataFrame({
+                "Open": data.get("o", []),
+                "High": data.get("h", []),
+                "Low": data.get("l", []),
+                "Close": data.get("c", []),
+                "Volume": data.get("v", []),
+            }, index=pd.to_datetime(data.get("t", []), unit="s", utc=True))
+            df = df.sort_index().dropna(how="any")
+            if not df.empty and df["Close"].dropna().shape[0] > 0:
+                return df
+        except Exception:
+            continue
+    return None
+
+# ---------- Publieke API ----------
 try:
     import streamlit as st
     _cache = st.cache_data
 except Exception:
-    # als Streamlit niet loaded is (unit tests), maak no-op decorator
     def _cache(ttl: int = 900):
         def deco(fn): return fn
         return deco
@@ -117,22 +145,19 @@ def fetch_prices(
     auto_adjust: bool = True
 ) -> Dict[str, pd.DataFrame]:
     """
-    Robuuste prijsloader met provider-keten:
-      1) Yahoo (yfinance, gebatcht)
-      2) Stooq (publieke CSV) per symbool, incl. ADR-remap (ASML.AS -> ASML)
-    - Deelsucces is oké: ontbrekende symbolen worden overgeslagen.
-    - Caching (15 min) om rate-limits te beperken.
+    Provider-keten: Yahoo -> Stooq -> Finnhub
+    - Deelsucces is oké; missende symbols worden aangevuld via fallback.
+    - Cache (15 min) om rate-limits te dempen.
     """
     syms = _sanitize(tickers)
     if not syms:
         return {}
-
     period = f"{max(int(lookback_days or 0), 60)}d"
+
     result: Dict[str, pd.DataFrame] = {}
 
-    # --- Eerst: Yahoo in batches met retries ---
-    missing: List[str] = list(syms)
-    for batch in _split(syms, 25):
+    # 1) Yahoo batched
+    for batch in _split(syms, 20):
         tries, todo = 0, list(batch)
         while todo and tries <= _MAX_RETRIES:
             try:
@@ -146,25 +171,24 @@ def fetch_prices(
             except Exception:
                 tries += 1
                 time.sleep((_BACKOFF ** tries) + 0.5)
-        # wat na retries ontbreekt, blijft missing
-        for t in batch:
-            if t not in result:
-                if t not in missing:
-                    missing.append(t)
 
-    # --- Dan: Stooq fallback per overgebleven symbool ---
-    still_missing = [t for t in syms if t not in result]
-    for t in still_missing:
-        df = _stooq_download_one(t, max(int(lookback_days or 0), 60))
-        if df is not None and not df.empty and "Close" in df.columns:
+    # 2) Stooq fallback (per symbool)
+    still = [t for t in syms if t not in result]
+    for t in still:
+        df = _stooq_one(t, max(int(lookback_days or 0), 60))
+        if df is not None:
+            result[t] = df
+
+    # 3) Finnhub fallback (alleen wat nog mist)
+    still = [t for t in syms if t not in result]
+    for t in still:
+        df = _finnhub_candles(t, max(int(lookback_days or 0), 60))
+        if df is not None:
             result[t] = df
 
     return result
 
 def latest_close(tickers: List[str], lookback_days: int = 10) -> Dict[str, float]:
-    """
-    Laatste geldige Close per ticker via fetch_prices-keten.
-    """
     px = fetch_prices(tickers, lookback_days=lookback_days)
     out: Dict[str, float] = {}
     for t, df in px.items():
