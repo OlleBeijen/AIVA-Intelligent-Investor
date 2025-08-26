@@ -1,30 +1,42 @@
 from __future__ import annotations
-from typing import List, Dict
-import os, requests
+from typing import List, Dict, Optional
+import os, requests, datetime as dt
 
-# Prioriteit: NewsAPI → Finnhub
+# Helpers
+def _now_iso() -> str:
+    return dt.datetime.utcnow().isoformat()+"Z"
+
+def _norm_item(ticker: str, title: str, publisher: str, url: str, published: str) -> Dict:
+    return {
+        "ticker": ticker,
+        "title": title.strip() if title else "",
+        "publisher": publisher.strip() if publisher else "",
+        "link": url,
+        "publishedAt": published or _now_iso(),
+    }
 
 def _get_newsapi(ticker: str, limit: int) -> List[Dict]:
     key = os.getenv("NEWSAPI_KEY")
     if not key:
         return []
-    url = f"https://newsapi.org/v2/everything?q={ticker}&language=en&pageSize={limit}&apiKey={key}"
+    q = ticker.replace(".AS","")
+    url = f"https://newsapi.org/v2/everything?q={q}&language=en&pageSize={limit}&sortBy=publishedAt&apiKey={key}"
     try:
         r = requests.get(url, timeout=10)
         r.raise_for_status()
         data = r.json()
         if data.get("status") != "ok":
             return []
-        articles = []
-        for a in data.get("articles", []):
-            articles.append({
-                "ticker": ticker,
-                "title": a.get("title") or "",
-                "publisher": a.get("source", {}).get("name") or "Unknown",
-                "link": a.get("url") or "",
-                "published": a.get("publishedAt") or ""
-            })
-        return articles
+        out = []
+        for art in data.get("articles", [])[:limit]:
+            out.append(_norm_item(
+                ticker=ticker,
+                title=art.get("title",""),
+                publisher=(art.get("source") or {}).get("name",""),
+                url=art.get("url",""),
+                published=art.get("publishedAt",""),
+            ))
+        return out
     except Exception:
         return []
 
@@ -32,43 +44,48 @@ def _get_finnhub(ticker: str, limit: int) -> List[Dict]:
     key = os.getenv("FINNHUB_KEY")
     if not key:
         return []
-    url = f"https://finnhub.io/api/v1/company-news?symbol={ticker}&from=2023-01-01&to=2030-01-01&token={key}"
+    # Laatste ~3 weken
+    to = dt.date.today()
+    frm = to - dt.timedelta(days=21)
+    url = f"https://finnhub.io/api/v1/company-news?symbol={ticker}&from={frm}&to={to}&token={key}"
     try:
         r = requests.get(url, timeout=10)
         r.raise_for_status()
         data = r.json()
-        articles = []
-        for a in data[:limit]:
-            articles.append({
-                "ticker": ticker,
-                "title": a.get("headline") or "",
-                "publisher": a.get("source") or "Unknown",
-                "link": a.get("url") or "",
-                "published": a.get("datetime") or ""
-            })
-        return articles
+        out = []
+        for it in (data or [])[:limit]:
+            out.append(_norm_item(
+                ticker=ticker,
+                title=it.get("headline",""),
+                publisher=it.get("source",""),
+                url=it.get("url",""),
+                published=dt.datetime.utcfromtimestamp(it.get("datetime",0)).isoformat()+"Z" if it.get("datetime") else "",
+            ))
+        return out
     except Exception:
         return []
 
-def get_news(tickers: List[str], limit_per: int = 5, provider: str = "auto") -> List[Dict]:
-    """
-    Haalt headlines op. Alleen NewsAPI en Finnhub toegestaan.
-    - Als provider="auto" → probeert eerst NewsAPI, dan Finnhub.
-    - Als provider="newsapi" → forceer alleen NewsAPI.
-    - Als provider="finnhub" → forceer alleen Finnhub.
-    """
+def get_news(tickers: Optional[List[str]]=None, limit_per: int = 6, provider: str = "auto") -> List[Dict]:
+    """Return a flat list of news dicts across tickers."""
     out: List[Dict] = []
     tickers = tickers or []
-
     for t in tickers:
         if provider == "newsapi":
             out.extend(_get_newsapi(t, limit_per))
         elif provider == "finnhub":
             out.extend(_get_finnhub(t, limit_per))
         else:
-            # auto: eerst NewsAPI, dan fallback Finnhub
             data = _get_newsapi(t, limit_per)
             if not data:
                 data = _get_finnhub(t, limit_per)
             out.extend(data)
-    return out
+    # de-dupe op (title, publisher)
+    seen = set()
+    uniq = []
+    for it in out:
+        key = (it.get("title","").strip(), it.get("publisher","").strip())
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(it)
+    return uniq[: (limit_per * max(1, len(tickers)) )]
