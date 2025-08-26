@@ -52,7 +52,8 @@ def make_report_md(rep: dict) -> str:
     if opps:
         lines.append("\n## Kansen (screening)")
         for sec, rows in opps.items():
-            lines.append(f"- **{sec}**: " + ", ".join([f"{t} ({_fmt_num(score)})" for t, score in rows]))
+            items = ", ".join([f"{t} ({_fmt_num(score)})" for t, score in rows])
+            lines.append(f"- **{sec}**: {items}")
 
     risk = rep.get("risk", {}) or {}
     if risk:
