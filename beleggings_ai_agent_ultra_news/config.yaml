@@ -1,0 +1,61 @@
+portfolio:
+  tickers:
+    - "ASML.AS"
+    - "AD.AS"
+    - "PHIA.AS"
+    - "NN.AS"
+    - "URW.AS"
+    - "AAPL"
+    - "MSFT"
+    - "NVDA"
+    - "ZSIL.SW"
+    - "ZPLA.SW"
+    - "DNN"
+    - "FVL.TO"
+    - "FNV"
+    - "SBSW"
+    - "MAG"
+    - "DSV.V"
+  weights: null
+
+watchlist: []
+
+sectors:
+  Tech: ["ASML.AS", "PHIA.AS", "AAPL", "MSFT", "NVDA"]
+  Financials: ["NN.AS"]
+  RealEstate: ["URW.AS"]
+  Consumer: ["AD.AS"]
+  Materials: ["FNV", "MAG", "SBSW", "DNN", "FVL.TO", "ZSIL.SW", "ZPLA.SW"]
+  Logistics: ["DSV.V"]
+
+signals:
+  ma_short: 20
+  ma_long: 50
+  rsi_period: 14
+  rsi_buy: 35
+  rsi_sell: 65
+
+data:
+  lookback_days: 365
+
+reporting:
+  currency: "EUR"
+
+news:
+  provider: "auto"
+  per_ticker: 8
+
+system:
+  regime_filter: true
+  macd_confirm: true
+  hysteresis_days: 2
+  stop_loss_pct: 0.08
+  take_profit_pct: 0.16
+  risk_per_trade_pct: 0.5
+  use_atr: true
+  atr_window: 14
+  capital_eur: 25000
+  max_positions: 8
+
+risk:
+  target_vol: 0.15
