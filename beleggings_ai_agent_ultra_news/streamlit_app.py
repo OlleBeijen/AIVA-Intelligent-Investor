@@ -190,13 +190,16 @@ with tabs[2]:
         st.session_state["chat_history"].append({"role":"user", "content": q})
         with st.chat_message("assistant"):
             with st.spinner("Denken..."):
-                ans = chat_answer(q, provider=cfg.get("news",{}).get("provider","auto"))
-                st.markdown(ans["text"])
-                if ans["sources"]:
-                    st.markdown("**Bronnen (laatste headlines):**")
-                    for it in ans["sources"]:
-                        st.markdown(f"- {it.get('publisher','?')}: [{it.get('title','(zonder titel)')}]({it.get('link','#')}) — _{it.get('ticker','')}_")
-        st.session_state["chat_history"].append({"role":"assistant", "content": ans["text"]})
+                try:
+                    ans = chat_answer(q, provider=cfg.get("news",{}).get("provider","auto"))
+                    st.markdown(ans["text"])
+                    if ans.get("sources"):
+                        st.markdown("**Bronnen (laatste headlines):**")
+                        for it in ans["sources"]:
+                            st.markdown(f"- {it.get('publisher','?')}: [{it.get('title','(zonder titel)')}]({it.get('link','#')}) — _{it.get('ticker','')}_")
+                    st.session_state["chat_history"].append({"role":"assistant", "content": ans["text"]})
+                except Exception as e:
+                    st.error(f"Chat kon niet starten: {e}")
 
 # ------- News -------
 with tabs[3]:
