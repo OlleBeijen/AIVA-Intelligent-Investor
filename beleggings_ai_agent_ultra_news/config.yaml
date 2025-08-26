@@ -1,66 +1,32 @@
 portfolio:
-  tickers: ["ASML.AS", "AD.AS", "PHIA.AS", "NN.AS", "URW.AS", "AAPL", "MSFT", "NVDA"]
-  weights: null
+  tickers:
+    - "ASML.AS"
+    - "AD.AS"
+    - "PHIA.AS"
+    - "NN.AS"
+    - "URW.AS"
+    - "AAPL"
+    - "MSFT"
+    - "NVDA"
+    - "ZSIL.SW"
+    - "ZPLA.SW"
+    - "DNN"
+    - "FVL.TO"
+    - "FNV"
+    - "SBSW"
+    - "MAG"
+    - "DSV.TO"
+  weights: null  # of vul handmatig in, bv: {"ASML.AS":0.1, ...}
 
-watchlist:
-  - "ASML.AS"
-  - "AAPL"
-  - "NVDA"
-  - "ZSIL.SW"
-  - "ZPLA.SW"
-  - "DNN"
-  - "FVL.TO"
-  - "FNV"
-  - "SBSW"
-  - "MAG"
-  - "DSV.TO"
-  - "SLNO"
-  - "BRK-B"
-  - "BABA"
-  - "STNE"
-  - "SNOW"
-  - "LGO"
-  - "LPV.V"
-  - "BMN.L"
-  - "AMG.AS"
-  - "DEO"
-  - "P911.DE"
-  - "DE"
-  - "TSM"
-  - "CTSH"
-  - "BIDU"
-  - "DASTY"
-  - "OKTA"
-  - "PATH"
-  - "MSFT"
-  - "GOOGL"
-  - "ADBE"
-  - "ORCL"
+watchlist: []
 
 sectors:
   Tech: ["ASML.AS", "PHIA.AS", "AAPL", "MSFT", "NVDA"]
-  Consumer: ["AD.AS"]
   Financials: ["NN.AS"]
-  REITs: ["URW.AS"]
-  PreciousMetals_ETF: ["ZSIL.SW", "ZPLA.SW"]
-  PreciousMetals_Miners: ["FNV", "MAG", "DSV.TO", "SBSW", "FVL.TO"]
-  Uranium: ["DNN"]
-  Vanadium_Materials: ["LGO", "LPV.V", "BMN.L", "AMG.AS"]
-  ChinaTech: ["BABA", "BIDU"]
-  US_Software_Cloud: ["SNOW", "OKTA", "PATH", "ADBE", "ORCL"]
-  US_BigTech: ["MSFT", "GOOGL"]
-  Semiconductors: ["TSM"]
-  Fintech_Payments: ["STNE"]
-  Industrials: ["DE", "P911.DE"]
-  Consumer_Staples: ["DEO"]
-  Biotech: ["SLNO"]
-  Conglomerates: ["BRK-B"]
-
-risk:
-  max_position_pct: 0.2
-  stop_loss_pct: 0.1
-  take_profit_pct: 0.2
-  target_portfolio_vol: 0.15
+  RealEstate: ["URW.AS"]
+  Consumer: ["AD.AS"]
+  Materials: ["FNV", "MAG", "SBSW", "DNN", "FVL.TO", "ZSIL.SW", "ZPLA.SW"]
+  Logistics: ["DSV.TO"]
 
 signals:
   ma_short: 20
@@ -76,5 +42,8 @@ reporting:
   currency: "EUR"
 
 news:
-  provider: "auto"   # auto | yahoo | newsapi | finnhub
+  provider: "auto"   # auto | newsapi | finnhub
   per_ticker: 8
+
+risk:
+  target_vol: 0.15
